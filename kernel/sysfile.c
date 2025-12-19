@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "string.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -309,6 +310,33 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+
+    // Follow symlinks unless caller asked not to.
+    if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)){
+      char linktarget[MAXPATH];
+      int depth = 0;
+      while(ip->type == T_SYMLINK){
+        if(depth++ >= 10){
+          iunlockput(ip);
+          end_op(ROOTDEV);
+          return -1;
+        }
+        // Read stored path from the symlink inode.
+        int r = readi(ip, 0, (uint64)linktarget, 0, MAXPATH);
+        iunlockput(ip);
+        if(r < 0){
+          end_op(ROOTDEV);
+          return -1;
+        }
+        linktarget[MAXPATH-1] = 0; // ensure termination
+        if((ip = namei(linktarget)) == 0){
+          end_op(ROOTDEV);
+          return -1;
+        }
+        ilock(ip);
+      }
+    }
+
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op(ROOTDEV);
@@ -342,10 +370,44 @@ sys_open(void)
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
 
+  if((omode & O_TRUNC) && ip->type == T_FILE)
+    itrunc(ip);
+
   iunlock(ip);
   end_op(ROOTDEV);
 
   return fd;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op(ROOTDEV);
+
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op(ROOTDEV);
+    return -1;
+  }
+
+  int len = strlen(target) + 1; // include terminator
+  if(len > MAXPATH)
+    len = MAXPATH;
+
+  if(writei(ip, 0, (uint64)target, 0, len) != len){
+    iunlockput(ip);
+    end_op(ROOTDEV);
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op(ROOTDEV);
+  return 0;
 }
 
 uint64
