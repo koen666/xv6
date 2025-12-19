@@ -437,7 +437,6 @@ sys_exec(void)
   char path[MAXPATH], *argv[MAXARG];
   int i;
   uint64 uargv, uarg;
-  printf("sys_exec: trying to run %s\n", path);
   if(argstr(0, path, MAXPATH) < 0 || argaddr(1, &uargv) < 0){
     return -1;
   }
@@ -462,8 +461,6 @@ sys_exec(void)
   }
 
   int ret = exec(path, argv);
-
-  printf("sys_exec: exec returned %d\n", ret);
 
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
     kfree(argv[i]);
