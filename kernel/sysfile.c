@@ -321,14 +321,16 @@ sys_open(void)
           end_op(ROOTDEV);
           return -1;
         }
-        // Read stored path from the symlink inode.
-        int r = readi(ip, 0, (uint64)linktarget, 0, MAXPATH);
+        // Read only up to the symlink's size to avoid partial strings.
+        int r = readi(ip, 0, (uint64)linktarget, 0, ip->size < MAXPATH ? ip->size : MAXPATH);
         iunlockput(ip);
         if(r < 0){
           end_op(ROOTDEV);
           return -1;
         }
-        linktarget[MAXPATH-1] = 0; // ensure termination
+        if(r >= MAXPATH)
+          r = MAXPATH - 1;
+        linktarget[r] = 0; // ensure termination
         if((ip = namei(linktarget)) == 0){
           end_op(ROOTDEV);
           return -1;
