@@ -283,6 +283,7 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+
 uint64
 sys_open(void)
 {
@@ -290,9 +291,8 @@ sys_open(void)
   int fd, omode;
   struct file *f;
   struct inode *ip;
-  int n;
 
-  if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
+  if(argstr(0, path, MAXPATH) < 0 || argint(1, &omode) < 0)
     return -1;
 
   begin_op(ROOTDEV);
@@ -309,17 +309,35 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+
+    if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)){
+      int depth = 0;
+      while(ip->type == T_SYMLINK){
+        if(depth >= 10){
+          iunlockput(ip);
+          end_op(ROOTDEV);
+          return -1;
+        }
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH){
+          iunlockput(ip);
+          end_op(ROOTDEV);
+          return -1;
+        }
+        iunlockput(ip);
+        if((ip = namei(path)) == 0){
+          end_op(ROOTDEV);
+          return -1;
+        }
+        ilock(ip);
+        depth++;
+      }
+    }
+
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op(ROOTDEV);
       return -1;
     }
-  }
-
-  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
-    iunlockput(ip);
-    end_op(ROOTDEV);
-    return -1;
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -330,17 +348,21 @@ sys_open(void)
     return -1;
   }
 
-  if(ip->type == T_DEVICE){
-    f->type = FD_DEVICE;
-    f->major = ip->major;
-    f->minor = ip->minor;
-  } else {
-    f->type = FD_INODE;
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+    iunlockput(ip);
+    end_op(ROOTDEV);
+    return -1;
   }
-  f->ip = ip;
+
+  f->type = FD_INODE;
   f->off = 0;
+  f->ip = ip;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+  if((omode & O_TRUNC) && ip->type == T_FILE){
+    itrunc(ip);
+  }
 
   iunlock(ip);
   end_op(ROOTDEV);
@@ -415,7 +437,7 @@ sys_exec(void)
   char path[MAXPATH], *argv[MAXARG];
   int i;
   uint64 uargv, uarg;
-
+  printf("sys_exec: trying to run %s\n", path);
   if(argstr(0, path, MAXPATH) < 0 || argaddr(1, &uargv) < 0){
     return -1;
   }
@@ -440,6 +462,8 @@ sys_exec(void)
   }
 
   int ret = exec(path, argv);
+
+  printf("sys_exec: exec returned %d\n", ret);
 
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
     kfree(argv[i]);
@@ -483,3 +507,29 @@ sys_pipe(void)
   return 0;
 }
 
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op(ROOTDEV);
+
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op(ROOTDEV);
+    return -1;
+  }
+
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH) {
+    iunlockput(ip);
+    end_op(ROOTDEV);
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op(ROOTDEV);
+  return 0;
+}
